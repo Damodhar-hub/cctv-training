@@ -1,0 +1,12 @@
+datasets/
+runs/
+test_run/
+cctv_v2/
+*.pt
+*.tar.gz
+*.zip
+__pycache__/
+*.pyc
+.env
+.DS_Store
+conversion_stats.json
