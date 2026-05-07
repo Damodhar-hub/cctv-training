@@ -51,25 +51,41 @@ def login(session: requests.Session, email: str, password: str) -> bool:
             print("ERROR: Could not find CSRF token")
             return False
 
+    # Debug: find all input fields in the login form
+    import re
+    input_fields = re.findall(r'<input[^>]*name=["\']([^"\']+)["\'][^>]*>', resp.text)
+    print(f"  Login form fields: {input_fields}")
+
     # Step 2: POST login credentials
+    # Try multiple field name combinations (Django allauth vs custom)
     print("Logging in...")
     login_data = {
         'csrfmiddlewaretoken': csrf_token,
         'login': email,
+        'username': email,
+        'email': email,
         'password': password,
     }
     headers = {
         'Referer': LOGIN_URL,
     }
 
-    resp = session.post(LOGIN_URL, data=login_data, headers=headers)
+    resp = session.post(LOGIN_URL, data=login_data, headers=headers, allow_redirects=True)
     resp.raise_for_status()
+
+    print(f"  Response URL: {resp.url}")
+    print(f"  Status: {resp.status_code}")
+    print(f"  Cookies: {dict(session.cookies)}")
 
     # Check if we got redirected back to login (= failed)
     if '/login/' in resp.url or '/accounts/login/' in resp.url:
         print(f"ERROR: Login failed. Response URL: {resp.url}")
-        # Check for error messages in response
-        if 'incorrect' in resp.text.lower() or 'invalid' in resp.text.lower():
+        # Show error messages from page
+        errors = re.findall(r'<(?:li|div|span)[^>]*class="[^"]*(?:error|alert)[^"]*"[^>]*>(.*?)</(?:li|div|span)>', resp.text, re.DOTALL)
+        if errors:
+            for e in errors:
+                print(f"  -> {e.strip()}")
+        elif 'incorrect' in resp.text.lower() or 'invalid' in resp.text.lower():
             print("  -> Invalid email or password")
         return False
 
