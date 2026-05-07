@@ -88,12 +88,12 @@ def discover_structure(input_dir: str) -> dict:
         image_dir = None
 
         # Try common patterns
-        for ann_name in ("annotations", "Annotations"):
+        for ann_name in ("annos", "annotations", "Annotations"):
             d = root / split / ann_name
             if d.is_dir():
                 annot_dir = str(d)
                 break
-        for img_name in ("images", "JPEGImages"):
+        for img_name in ("images", "JPEGImages", "imgs"):
             d = root / split / img_name
             if d.is_dir():
                 image_dir = str(d)
@@ -110,10 +110,10 @@ def discover_structure(input_dir: str) -> dict:
         return info
 
     # Check layout B: single Annotations + JPEGImages
-    for ann_name in ("annotations", "Annotations"):
+    for ann_name in ("annos", "annotations", "Annotations"):
         d = root / ann_name
         if d.is_dir():
-            for img_name in ("images", "JPEGImages"):
+            for img_name in ("images", "JPEGImages", "imgs"):
                 id_ = root / img_name
                 if id_.is_dir():
                     info["layout"] = "flat"
