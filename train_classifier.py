@@ -58,6 +58,9 @@ def parse_args():
     p.add_argument("--warmup-epochs", type=int, default=5)
     p.add_argument("--min-lr", type=float, default=1e-6)
     p.add_argument("--resume", default=None, help="Path to checkpoint to resume from")
+    p.add_argument("--freeze-backbone-epochs", type=int, default=10,
+                    help="Freeze backbone for first N epochs (default: 10)")
+    p.add_argument("--dropout", type=float, default=0.5, help="Dropout rate (default: 0.5)")
     return p.parse_args()
 
 
@@ -67,14 +70,29 @@ def parse_args():
 class FGVDClassifier(nn.Module):
     """EfficientNet backbone + dropout + linear head."""
 
-    def __init__(self, backbone_name: str, num_classes: int, pretrained: bool = True):
+    def __init__(self, backbone_name: str, num_classes: int, pretrained: bool = True,
+                 dropout: float = 0.5):
         super().__init__()
         self.backbone = timm.create_model(backbone_name, pretrained=pretrained, num_classes=0)
         feat_dim = self.backbone.num_features
         self.head = nn.Sequential(
-            nn.Dropout(0.3),
-            nn.Linear(feat_dim, num_classes),
+            nn.BatchNorm1d(feat_dim),
+            nn.Dropout(dropout),
+            nn.Linear(feat_dim, 512),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout * 0.5),
+            nn.Linear(512, num_classes),
         )
+
+    def freeze_backbone(self):
+        """Freeze backbone parameters for warm-up training."""
+        for param in self.backbone.parameters():
+            param.requires_grad = False
+
+    def unfreeze_backbone(self):
+        """Unfreeze backbone parameters for fine-tuning."""
+        for param in self.backbone.parameters():
+            param.requires_grad = True
 
     def forward(self, x):
         features = self.backbone(x)
@@ -87,14 +105,15 @@ class FGVDClassifier(nn.Module):
 def build_transforms(imgsz: int):
     """Return (train_transform, val_transform)."""
     train_tf = transforms.Compose([
-        transforms.RandomResizedCrop(imgsz, scale=(0.7, 1.0), ratio=(0.75, 1.33)),
+        transforms.RandomResizedCrop(imgsz, scale=(0.5, 1.0), ratio=(0.75, 1.33)),
         transforms.RandomHorizontalFlip(p=0.5),
-        transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.2, hue=0.05),
-        transforms.RandomAffine(degrees=10, translate=(0.1, 0.1), scale=(0.9, 1.1)),
-        transforms.RandomGrayscale(p=0.05),
+        transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.3, hue=0.1),
+        transforms.RandomAffine(degrees=15, translate=(0.15, 0.15), scale=(0.85, 1.15)),
+        transforms.RandomGrayscale(p=0.1),
+        transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 2.0)),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        transforms.RandomErasing(p=0.2),
+        transforms.RandomErasing(p=0.4, scale=(0.02, 0.25)),
     ])
 
     val_tf = transforms.Compose([
@@ -270,12 +289,18 @@ def main():
     )
 
     # Model
-    model = FGVDClassifier(args.backbone, num_classes, pretrained=True)
+    model = FGVDClassifier(args.backbone, num_classes, pretrained=True, dropout=args.dropout)
     model = model.to(device)
-    print(f"Model: {args.backbone} -> {num_classes} classes")
+    print(f"Model: {args.backbone} -> {num_classes} classes (dropout={args.dropout})")
 
     param_count = sum(p.numel() for p in model.parameters())
     print(f"Parameters: {param_count:,}")
+
+    # Freeze backbone for initial epochs
+    freeze_epochs = args.freeze_backbone_epochs
+    if freeze_epochs > 0:
+        model.freeze_backbone()
+        print(f"Backbone FROZEN for first {freeze_epochs} epochs")
 
     # Class weights + loss
     class_weights = compute_class_weights(train_dataset).to(device)
@@ -284,7 +309,7 @@ def main():
         label_smoothing=args.label_smoothing,
     )
 
-    # Optimizer (differential LR)
+    # Optimizer — initially only head params if frozen
     backbone_params = list(model.backbone.parameters())
     head_params = list(model.head.parameters())
     optimizer = torch.optim.AdamW([
@@ -338,6 +363,8 @@ def main():
         "label_smoothing": args.label_smoothing,
         "warmup_epochs": args.warmup_epochs,
         "patience": args.patience,
+        "dropout": args.dropout,
+        "freeze_backbone_epochs": args.freeze_backbone_epochs,
     }
 
     print(f"\nStarting training for {args.epochs} epochs...")
@@ -349,6 +376,11 @@ def main():
 
     for epoch in range(start_epoch, args.epochs):
         epoch_start = time.time()
+
+        # Unfreeze backbone after freeze period
+        if freeze_epochs > 0 and epoch == freeze_epochs:
+            model.unfreeze_backbone()
+            print(f"\n*** Backbone UNFROZEN at epoch {epoch} ***\n")
 
         # Current LR
         current_lr = optimizer.param_groups[1]["lr"]  # head LR
