@@ -11,15 +11,25 @@ fi
 cd /workspace
 
 # Install deps
-pip install -r requirements.txt
+pip install -r cctv-training/requirements.txt
 
-# Download dataset (resume support with -c)
+# Delete any bad partial downloads (e.g. HTML login page from plain wget)
+if [ -f datasets/idd_detection.tar.gz ]; then
+  SIZE=$(stat -c%s datasets/idd_detection.tar.gz 2>/dev/null || echo "0")
+  if [ "$SIZE" -lt 1000000 ]; then
+    echo "Removing bad partial file (${SIZE} bytes)..."
+    rm -f datasets/idd_detection.tar.gz
+  fi
+fi
+
+# Download dataset with authenticated session
 mkdir -p datasets
-cd datasets
-echo "Downloading IDD Detection dataset (~23GB)..."
-wget -c "$IDD_TOKEN_URL" -O idd_detection.tar.gz
+python cctv-training/download_idd.py \
+  --url "$IDD_TOKEN_URL" \
+  --output datasets/idd_detection.tar.gz
 
 # Extract (auto-detect format)
+cd datasets
 FILETYPE=$(file idd_detection.tar.gz)
 echo "Detected file type: $FILETYPE"
 
@@ -45,7 +55,7 @@ echo "Found extracted folder: $EXTRACTED"
 
 # Convert to YOLO format
 cd /workspace
-python convert_idd_to_yolo.py \
+python cctv-training/convert_idd_to_yolo.py \
   --input "datasets/$EXTRACTED" \
   --output "datasets/cctv_dataset"
 
